@@ -2,16 +2,17 @@
 const AuthModule = {
     renderLogin() {
         setHTML('#auth-container', `
+            <div class="auth-partner-logos">
+                <img src="/static/images/actvet-logo.png" alt="ACTVET">
+                <img src="/static/images/adpoly-badge.png" alt="AD Poly">
+            </div>
             <div class="auth-card fade-in">
                 <div class="auth-header">
                     <div class="auth-logo">
-                        <svg viewBox="0 0 60 60" width="60" height="60">
-                            <rect width="60" height="60" rx="14" fill="#4A90D9"/>
-                            <text x="30" y="40" text-anchor="middle" fill="white" font-size="26" font-weight="bold" font-family="system-ui">AP</text>
-                        </svg>
+                        <img src="/static/images/adpoly-logo.png" alt="Abu Dhabi Polytechnic" style="height:60px; width:auto; margin:0 auto;">
                     </div>
-                    <h1>Welcome Back</h1>
-                    <p>Sign in to ADPOLY Blackboard</p>
+                    <h1>ADPOLY Blackboard</h1>
+                    <p>Learning Management System</p>
                 </div>
                 <div class="auth-body">
                     <div id="login-error" class="form-error" style="display:none; margin-bottom:16px; text-align:center;"></div>
@@ -42,6 +43,11 @@ const AuthModule = {
                 <div class="auth-footer">
                     Don't have an account? <a href="#/register">Create one</a>
                 </div>
+            </div>
+            <div class="auth-footer-brand">
+                Abu Dhabi Polytechnic | Applied Technology High School<br>
+                &copy; ${new Date().getFullYear()} ACTVET. All rights reserved. |
+                <a href="https://adpoly.ac.ae" target="_blank" style="color:rgba(255,255,255,0.6);">adpoly.ac.ae</a>
             </div>
         `);
 
@@ -93,10 +99,7 @@ const AuthModule = {
             <div class="auth-card fade-in">
                 <div class="auth-header">
                     <div class="auth-logo">
-                        <svg viewBox="0 0 60 60" width="60" height="60">
-                            <rect width="60" height="60" rx="14" fill="#4A90D9"/>
-                            <text x="30" y="40" text-anchor="middle" fill="white" font-size="26" font-weight="bold" font-family="system-ui">AP</text>
-                        </svg>
+                        <img src="/static/images/adpoly-logo.png" alt="Abu Dhabi Polytechnic" style="height:60px; width:auto; margin:0 auto;">
                     </div>
                     <h1>Create Account</h1>
                     <p>Join ADPOLY Blackboard</p>

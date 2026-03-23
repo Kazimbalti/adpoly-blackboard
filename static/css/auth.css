@@ -4,8 +4,30 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #0F172A 0%, #1E3A5F 50%, #4A90D9 100%);
+    flex-direction: column;
+    gap: 20px;
+    background: linear-gradient(135deg, #0A1628 0%, #122B4D 40%, #1E5A8C 70%, #4A90D9 100%);
     padding: 20px;
+}
+
+.auth-partner-logos {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    opacity: 0.85;
+}
+
+.auth-partner-logos img {
+    height: 40px;
+    width: auto;
+    filter: brightness(0) invert(1);
+}
+
+.auth-footer-brand {
+    text-align: center;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.75rem;
+    margin-top: 8px;
 }
 
 .auth-card {
