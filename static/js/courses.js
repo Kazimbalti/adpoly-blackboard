@@ -225,21 +225,29 @@ const CoursesModule = {
     },
 
     async renderStudentsTab(courseId) {
-        const [studData, availData] = await Promise.all([
-            apiGet(`/courses/${courseId}/students`),
-            apiGet('/admin/users?role=student&per_page=200').catch(() => ({ users: [] }))
-        ]);
+        const studData = await apiGet(`/courses/${courseId}/students`);
         const students = studData.students || [];
         const user = getUser();
         const isFaculty = user.role === 'faculty' || user.role === 'admin';
+        const activeStudents = students.filter(s => s.status === 'active');
 
         setHTML('#course-tab-content', `
             <div class="fade-in">
                 ${isFaculty ? `
-                    <div class="mb-2 flex gap-1 flex-wrap">
-                        <button class="btn btn-primary btn-sm" onclick="CoursesModule.showAddStudentForm(${courseId})">+ Add Student</button>
-                        <button class="btn btn-outline btn-sm" onclick="CoursesModule.showBulkEnrollForm(${courseId})">Bulk Enroll</button>
-                        <span class="tag tag-primary" style="align-self:center;">${students.length} enrolled</span>
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <div class="flex justify-between items-center flex-wrap gap-2 mb-2">
+                                <h3 style="font-size:1.05rem;">Enrolled Students (${activeStudents.length})</h3>
+                                <div class="flex gap-1">
+                                    <button class="btn btn-primary btn-sm" onclick="CoursesModule.showBulkEnrollForm(${courseId})">+ Bulk Add Students</button>
+                                    <button class="btn btn-outline btn-sm" onclick="CoursesModule.showSearchEnroll(${courseId})">Search & Add</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="CoursesModule.showVisibilitySettings(${courseId})">Visibility Settings</button>
+                                </div>
+                            </div>
+
+                            <!-- Quick search enrolled -->
+                            <input type="text" class="form-control mb-2" placeholder="Filter enrolled students..." oninput="CoursesModule.filterStudentRows(this.value)" style="max-width:400px;">
+                        </div>
                     </div>
                 ` : ''}
 
@@ -255,9 +263,9 @@ const CoursesModule = {
                                 ${isFaculty ? '<th>Teams</th><th>Actions</th>' : ''}
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="student-rows">
                             ${students.length ? students.map((s, i) => `
-                                <tr>
+                                <tr class="student-row" data-name="${escapeHtml((s.first_name+' '+s.last_name+' '+s.email).toLowerCase())}">
                                     <td>${i + 1}</td>
                                     <td>
                                         <div class="flex items-center gap-1">
@@ -269,7 +277,7 @@ const CoursesModule = {
                                     <td><span class="tag tag-${s.status === 'active' ? 'success' : s.status === 'dropped' ? 'danger' : 'secondary'}">${s.status}</span></td>
                                     <td style="font-size:0.8rem;">${formatDate(s.enrolled_at)}</td>
                                     ${isFaculty ? `
-                                        <td>${TeamsModule.renderTeamsButton(s.email, s.first_name, 'chat')}</td>
+                                        <td>${typeof TeamsModule !== 'undefined' ? TeamsModule.renderTeamsButton(s.email, s.first_name, 'chat') : ''}</td>
                                         <td>
                                             <div class="flex gap-1">
                                                 ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost text-danger" onclick="CoursesModule.removeStudent(${courseId}, ${s.id}, '${escapeHtml(s.first_name)}')">Remove</button>` : ''}
@@ -278,7 +286,7 @@ const CoursesModule = {
                                         </td>
                                     ` : ''}
                                 </tr>
-                            `).join('') : '<tr><td colspan="7" class="text-center text-muted">No students enrolled</td></tr>'}
+                            `).join('') : '<tr><td colspan="7" class="text-center text-muted">No students enrolled yet. Click "Bulk Add Students" to add them.</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -286,96 +294,189 @@ const CoursesModule = {
         `);
     },
 
-    showAddStudentForm(courseId) {
-        showModal('Add Student to Course', `
-            <form>
-                <div class="form-group">
-                    <label>Student Email</label>
-                    <input type="email" id="add-student-email" class="form-control" placeholder="student@adpoly.ac.ae" required>
-                    <div class="form-hint">Enter the student's registered email address</div>
-                </div>
-                <div class="form-group">
-                    <label>Or create a new student account:</label>
-                    <div class="form-row mt-1">
-                        <input type="text" id="new-student-first" class="form-control" placeholder="First Name">
-                        <input type="text" id="new-student-last" class="form-control" placeholder="Last Name">
-                    </div>
-                    <input type="email" id="new-student-email" class="form-control mt-1" placeholder="New student email">
-                    <div class="form-hint">Leave blank if student already has an account</div>
-                </div>
-            </form>
-        `, `
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="CoursesModule.addStudent(${courseId})">Add Student</button>
-        `);
-    },
-
-    async addStudent(courseId) {
-        const existingEmail = $('#add-student-email').value.trim();
-        const newFirst = $('#new-student-first').value.trim();
-        const newLast = $('#new-student-last').value.trim();
-        const newEmail = $('#new-student-email').value.trim();
-
-        let studentId = null;
-
-        // If creating new student
-        if (newFirst && newEmail) {
-            const regData = await apiPost('/auth/register', {
-                email: newEmail,
-                password: 'Student@123',
-                first_name: newFirst,
-                last_name: newLast,
-                role: 'student'
-            });
-            if (regData.error && !regData.error.includes('already')) {
-                showToast(regData.error, 'error');
-                return;
-            }
-            studentId = regData.user?.id;
-        }
-
-        // Enroll by email lookup (faculty enrolls student by ID)
-        if (existingEmail || newEmail) {
-            const data = await apiPost(`/courses/${courseId}/enroll`, {
-                student_email: existingEmail || newEmail,
-                student_id: studentId
-            });
-            if (data.error) { showToast(data.error, 'error'); return; }
-        }
-
-        closeModal();
-        showToast('Student added!', 'success');
-        this.renderStudentsTab(courseId);
+    filterStudentRows(query) {
+        const q = query.toLowerCase();
+        $$('.student-row').forEach(row => {
+            row.style.display = !q || row.dataset.name.includes(q) ? '' : 'none';
+        });
     },
 
     showBulkEnrollForm(courseId) {
-        showModal('Bulk Enroll Students', `
+        showModal('Bulk Add Students', `
+            <div style="margin-bottom:16px; padding:12px; background:var(--info-bg); border-radius:var(--radius-sm); font-size:0.85rem; color:var(--info);">
+                <strong>How it works:</strong> Paste student emails below (one per line).
+                If a student doesn't have an account yet, one will be <strong>automatically created</strong>
+                with password <code>Student@123</code>.
+            </div>
             <form>
                 <div class="form-group">
                     <label>Student Emails (one per line)</label>
-                    <textarea id="bulk-emails" class="form-control" rows="8" placeholder="student1@adpoly.ac.ae\nstudent2@adpoly.ac.ae\nstudent3@adpoly.ac.ae"></textarea>
-                    <div class="form-hint">Enter student emails, one per line. Students must already have accounts.</div>
+                    <textarea id="bulk-emails" class="form-control" rows="12" placeholder="student1@adpoly.ac.ae
+student2@adpoly.ac.ae
+student3@adpoly.ac.ae
+mohammed.ali@adpoly.ac.ae
+sara.nasser@adpoly.ac.ae
+
+Paste all student emails here, one per line.
+You can also paste comma-separated emails."></textarea>
+                    <div class="form-hint">
+                        <span id="email-count">0</span> emails detected.
+                        New students will be auto-created with password: <strong>Student@123</strong>
+                    </div>
                 </div>
             </form>
+            <script>
+                document.getElementById('bulk-emails').addEventListener('input', function() {
+                    const count = this.value.split(/[\\n,]/).map(e => e.trim()).filter(e => e && e.includes('@')).length;
+                    document.getElementById('email-count').textContent = count;
+                });
+            </script>
         `, `
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="CoursesModule.bulkEnroll(${courseId})">Enroll All</button>
-        `);
+            <button class="btn btn-primary" id="bulk-enroll-btn" onclick="CoursesModule.bulkEnroll(${courseId})">Enroll All Students</button>
+        `, { wide: true });
     },
 
     async bulkEnroll(courseId) {
-        const emails = $('#bulk-emails').value.split('\\n').map(e => e.trim()).filter(e => e);
-        if (!emails.length) { showToast('Enter at least one email', 'warning'); return; }
+        const raw = $('#bulk-emails').value;
+        const emails = raw.split(/[\n,]/).map(e => e.trim()).filter(e => e && e.includes('@'));
 
-        let success = 0, failed = 0;
-        for (const email of emails) {
-            const data = await apiPost(`/courses/${courseId}/enroll`, { student_email: email });
-            if (data.error) failed++;
-            else success++;
+        if (!emails.length) {
+            showToast('No valid emails found. Enter emails one per line.', 'warning');
+            return;
         }
+
+        const btn = $('#bulk-enroll-btn');
+        if (btn) { btn.disabled = true; btn.textContent = `Enrolling ${emails.length} students...`; }
+
+        const data = await apiPost(`/courses/${courseId}/bulk-enroll`, { emails });
+
+        if (data.error) {
+            showToast(data.error, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = 'Enroll All Students'; }
+            return;
+        }
+
+        const r = data.results;
         closeModal();
-        showToast(`Enrolled ${success} students. ${failed ? failed + ' failed.' : ''}`, success > 0 ? 'success' : 'error');
+
+        // Show detailed results
+        let msg = '';
+        if (r.enrolled.length) msg += `${r.enrolled.length} enrolled. `;
+        if (r.created_and_enrolled.length) msg += `${r.created_and_enrolled.length} new accounts created & enrolled. `;
+        if (r.already_enrolled.length) msg += `${r.already_enrolled.length} already enrolled. `;
+        if (r.errors.length) msg += `${r.errors.length} errors.`;
+
+        showToast(msg || data.message, (r.errors.length && !r.enrolled.length) ? 'error' : 'success', 6000);
+
+        // Show errors if any
+        if (r.errors.length) {
+            setTimeout(() => {
+                showModal('Enrollment Errors', `
+                    <div class="table-container">
+                        <table>
+                            <thead><tr><th>Email</th><th>Error</th></tr></thead>
+                            <tbody>
+                                ${r.errors.map(e => `<tr><td>${escapeHtml(e.email)}</td><td class="text-danger">${escapeHtml(e.reason)}</td></tr>`).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `, '<button class="btn btn-secondary" onclick="closeModal()">Close</button>');
+            }, 500);
+        }
+
         this.renderStudentsTab(courseId);
+    },
+
+    showSearchEnroll(courseId) {
+        showModal('Search & Add Students', `
+            <div class="form-group">
+                <label>Search by name or email</label>
+                <input type="text" id="student-search-input" class="form-control" placeholder="Type to search..." oninput="CoursesModule.searchStudents(${courseId}, this.value)">
+            </div>
+            <div id="student-search-results" style="max-height:400px; overflow-y:auto;">
+                <p class="text-muted text-center" style="padding:20px;">Type at least 2 characters to search</p>
+            </div>
+        `, '<button class="btn btn-secondary" onclick="closeModal()">Done</button>', { wide: true });
+    },
+
+    _searchDebounce: null,
+    searchStudents(courseId, query) {
+        clearTimeout(this._searchDebounce);
+        if (query.length < 2) {
+            setHTML('#student-search-results', '<p class="text-muted text-center" style="padding:20px;">Type at least 2 characters to search</p>');
+            return;
+        }
+        this._searchDebounce = setTimeout(async () => {
+            const data = await apiGet(`/courses/${courseId}/search-students?q=${encodeURIComponent(query)}`);
+            const students = data.students || [];
+            setHTML('#student-search-results', students.length ? students.map(s => `
+                <div class="flex items-center gap-2 mb-1" style="padding:10px 12px; background:var(--bg); border-radius:var(--radius-sm);">
+                    <div class="avatar avatar-sm">${getInitials(s.first_name, s.last_name)}</div>
+                    <div class="flex-1">
+                        <strong style="font-size:0.9rem;">${escapeHtml(s.first_name)} ${escapeHtml(s.last_name)}</strong>
+                        <div style="font-size:0.8rem; color:var(--text-muted);">${escapeHtml(s.email)}</div>
+                    </div>
+                    ${s.is_enrolled ? '<span class="tag tag-success">Enrolled</span>' :
+                        `<button class="btn btn-sm btn-primary" onclick="CoursesModule.quickEnroll(${courseId}, '${escapeHtml(s.email)}', this)">+ Add</button>`}
+                </div>
+            `).join('') : '<p class="text-muted text-center" style="padding:20px;">No students found</p>');
+        }, 300);
+    },
+
+    async quickEnroll(courseId, email, btn) {
+        if (btn) { btn.disabled = true; btn.textContent = 'Adding...'; }
+        const data = await apiPost(`/courses/${courseId}/enroll`, { student_email: email });
+        if (data.error) {
+            showToast(data.error, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '+ Add'; }
+        } else {
+            if (btn) { btn.outerHTML = '<span class="tag tag-success">Enrolled</span>'; }
+            showToast('Student added!', 'success');
+        }
+    },
+
+    showVisibilitySettings(courseId) {
+        showModal('Course Visibility Settings', `
+            <p class="text-secondary mb-2" style="font-size:0.9rem;">Control what students can see in this course.</p>
+            <div class="card mb-2">
+                <div class="card-body">
+                    <h4 style="font-size:0.95rem; margin-bottom:12px;">Bulk Visibility</h4>
+                    <div class="flex flex-col gap-2">
+                        <div class="flex justify-between items-center">
+                            <span>All Course Materials</span>
+                            <div class="flex gap-1">
+                                <button class="btn btn-sm btn-success" onclick="CoursesModule.setVisibility(${courseId}, 'materials_visible', true)">Show All</button>
+                                <button class="btn btn-sm btn-danger" onclick="CoursesModule.setVisibility(${courseId}, 'materials_visible', false)">Hide All</button>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span>All Assignments</span>
+                            <div class="flex gap-1">
+                                <button class="btn btn-sm btn-success" onclick="CoursesModule.setVisibility(${courseId}, 'assignments_visible', true)">Show All</button>
+                                <button class="btn btn-sm btn-danger" onclick="CoursesModule.setVisibility(${courseId}, 'assignments_visible', false)">Hide All</button>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span>All Exams</span>
+                            <div class="flex gap-1">
+                                <button class="btn btn-sm btn-success" onclick="CoursesModule.setVisibility(${courseId}, 'exams_visible', true)">Show All</button>
+                                <button class="btn btn-sm btn-danger" onclick="CoursesModule.setVisibility(${courseId}, 'exams_visible', false)">Hide All</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="form-hint">
+                You can also show/hide individual items from the Materials, Assignments, and Exams tabs.
+            </div>
+        `, '<button class="btn btn-secondary" onclick="closeModal()">Done</button>');
+    },
+
+    async setVisibility(courseId, field, visible) {
+        const data = await apiPut(`/courses/${courseId}/visibility`, { [field]: visible });
+        if (data.error) { showToast(data.error, 'error'); return; }
+        showToast(`${field.replace('_', ' ')} ${visible ? 'shown' : 'hidden'} for students`, 'success');
     },
 
     removeStudent(courseId, studentId, name) {

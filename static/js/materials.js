@@ -61,7 +61,10 @@ const MaterialsModule = {
                                         <span>${formatDate(m.created_at)}</span>
                                     </div>
                                 </div>
-                                <div class="flex gap-1">
+                                <div class="flex gap-1 items-center">
+                                    ${isFaculty ? `<button class="btn btn-sm ${m.is_visible ? 'btn-success' : 'btn-danger'}" onclick="MaterialsModule.toggleVisibility(${m.id}, ${courseId}, ${m.is_visible ? 0 : 1})" title="${m.is_visible ? 'Visible to students - click to hide' : 'Hidden from students - click to show'}">
+                                        ${m.is_visible ? 'Visible' : 'Hidden'}
+                                    </button>` : ''}
                                     ${m.material_type === 'file' ? `<a href="/api/materials/${m.id}/download" class="btn btn-sm btn-outline">Download</a>` : ''}
                                     ${m.material_type === 'link' ? `<a href="${escapeHtml(m.url)}" target="_blank" class="btn btn-sm btn-outline">Open</a>` : ''}
                                     ${isFaculty ? `<button class="btn btn-ghost btn-sm text-danger" onclick="MaterialsModule.deleteMaterial(${m.id}, ${courseId})">Delete</button>` : ''}
@@ -258,6 +261,12 @@ const MaterialsModule = {
         if (data.error) { showToast(data.error, 'error'); return; }
         closeModal();
         showToast('Folder created!', 'success');
+        this.renderForCourse(courseId);
+    },
+
+    async toggleVisibility(materialId, courseId, newVal) {
+        await apiPut(`/materials/${materialId}`, { is_visible: newVal });
+        showToast(newVal ? 'Material visible to students' : 'Material hidden from students', 'success');
         this.renderForCourse(courseId);
     },
 

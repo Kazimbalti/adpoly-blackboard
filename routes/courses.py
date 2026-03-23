@@ -296,6 +296,160 @@ def create_announcement(course_id):
     return jsonify({"message": "Announcement posted", "announcement": announcement}), 201
 
 
+@courses_bp.route('/<int:course_id>/bulk-enroll', methods=['POST'])
+@faculty_required
+def bulk_enroll(course_id):
+    """Bulk enroll students by email list. Creates accounts for new emails."""
+    course = query_one("SELECT * FROM courses WHERE id = ?", (course_id,))
+    if not course:
+        return jsonify({"error": "Course not found"}), 404
+
+    data = request.get_json()
+    if not data or not data.get('emails'):
+        return jsonify({"error": "emails array required"}), 400
+
+    emails = data['emails']
+    if isinstance(emails, str):
+        emails = [e.strip() for e in emails.replace(',', '\n').split('\n') if e.strip()]
+
+    results = {"enrolled": [], "already_enrolled": [], "created_and_enrolled": [], "errors": []}
+
+    for email in emails:
+        email = email.strip().lower()
+        if not email or '@' not in email:
+            results['errors'].append({"email": email, "reason": "Invalid email"})
+            continue
+
+        # Find existing student
+        student = query_one("SELECT * FROM users WHERE email = ?", (email,))
+
+        if not student:
+            # Auto-create student account
+            from services.auth_service import hash_password
+            name_part = email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+            parts = name_part.split()
+            first_name = parts[0] if parts else 'Student'
+            last_name = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+            try:
+                student_id = execute(
+                    "INSERT INTO users (email, password_hash, first_name, last_name, role) VALUES (?, ?, ?, ?, ?)",
+                    (email, hash_password('Student@123'), first_name, last_name, 'student')
+                )
+                student = query_one("SELECT * FROM users WHERE id = ?", (student_id,))
+                results['created_and_enrolled'].append(email)
+            except Exception as e:
+                results['errors'].append({"email": email, "reason": str(e)})
+                continue
+        elif student['role'] != 'student':
+            results['errors'].append({"email": email, "reason": "User is not a student"})
+            continue
+
+        # Check existing enrollment
+        existing = query_one(
+            "SELECT * FROM enrollments WHERE course_id = ? AND student_id = ?",
+            (course_id, student['id'])
+        )
+
+        if existing:
+            if existing['status'] == 'active':
+                results['already_enrolled'].append(email)
+            else:
+                execute("UPDATE enrollments SET status = 'active' WHERE id = ?", (existing['id'],))
+                results['enrolled'].append(email)
+        else:
+            execute(
+                "INSERT INTO enrollments (course_id, student_id) VALUES (?, ?)",
+                (course_id, student['id'])
+            )
+            results['enrolled'].append(email)
+
+    total_success = len(results['enrolled']) + len(results['created_and_enrolled'])
+    return jsonify({
+        "message": f"Processed {len(emails)} emails: {total_success} enrolled, {len(results['already_enrolled'])} already enrolled, {len(results['errors'])} errors",
+        "results": results
+    })
+
+
+@courses_bp.route('/<int:course_id>/search-students', methods=['GET'])
+@faculty_required
+def search_students(course_id):
+    """Search for students to add to course."""
+    search = request.args.get('q', '')
+    if len(search) < 2:
+        return jsonify({"students": []})
+
+    students = query(
+        """SELECT u.id, u.email, u.first_name, u.last_name,
+                  (SELECT COUNT(*) FROM enrollments WHERE student_id = u.id AND course_id = ? AND status = 'active') as is_enrolled
+           FROM users u
+           WHERE u.role = 'student' AND u.is_active = 1
+             AND (u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ?)
+           ORDER BY u.last_name, u.first_name LIMIT 20""",
+        (course_id, f"%{search}%", f"%{search}%", f"%{search}%")
+    )
+    return jsonify({"students": students})
+
+
+@courses_bp.route('/<int:course_id>/all-students', methods=['GET'])
+@faculty_required
+def list_all_students(course_id):
+    """List all students in the system for enrollment."""
+    students = query(
+        """SELECT u.id, u.email, u.first_name, u.last_name,
+                  (SELECT COUNT(*) FROM enrollments WHERE student_id = u.id AND course_id = ? AND status = 'active') as is_enrolled
+           FROM users u
+           WHERE u.role = 'student' AND u.is_active = 1
+           ORDER BY u.last_name, u.first_name""",
+        (course_id,)
+    )
+    return jsonify({"students": students})
+
+
+@courses_bp.route('/<int:course_id>/visibility', methods=['PUT'])
+@faculty_required
+def update_course_visibility(course_id):
+    """Update what students can see in the course."""
+    course = query_one("SELECT * FROM courses WHERE id = ? AND faculty_id = ?",
+                       (course_id, g.current_user['id']))
+    if not course:
+        return jsonify({"error": "Course not found or unauthorized"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid request"}), 400
+
+    # Update material visibility
+    if 'materials_visible' in data:
+        execute("UPDATE materials SET is_visible = ? WHERE course_id = ?",
+                (1 if data['materials_visible'] else 0, course_id))
+
+    # Update assignment visibility
+    if 'assignments_visible' in data:
+        execute("UPDATE assignments SET is_visible = ? WHERE course_id = ?",
+                (1 if data['assignments_visible'] else 0, course_id))
+
+    # Update exam visibility
+    if 'exams_visible' in data:
+        execute("UPDATE exams SET is_published = ? WHERE course_id = ?",
+                (1 if data['exams_visible'] else 0, course_id))
+
+    # Update individual items
+    if data.get('material_id') is not None:
+        execute("UPDATE materials SET is_visible = ? WHERE id = ? AND course_id = ?",
+                (1 if data.get('visible', True) else 0, data['material_id'], course_id))
+
+    if data.get('assignment_id') is not None:
+        execute("UPDATE assignments SET is_visible = ? WHERE id = ? AND course_id = ?",
+                (1 if data.get('visible', True) else 0, data['assignment_id'], course_id))
+
+    if data.get('exam_id') is not None:
+        execute("UPDATE exams SET is_published = ? WHERE id = ? AND course_id = ?",
+                (1 if data.get('visible', True) else 0, data['exam_id'], course_id))
+
+    return jsonify({"message": "Visibility updated"})
+
+
 @courses_bp.route('/available', methods=['GET'])
 @login_required
 def list_available_courses():
