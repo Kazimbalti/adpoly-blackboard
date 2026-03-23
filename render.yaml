@@ -3,6 +3,7 @@ services:
     name: adpoly-blackboard
     runtime: python
     plan: free
+    repo: https://github.com/Kazimbalti/adpoly-blackboard
     buildCommand: |
       pip install -r requirements.txt
       python seed.py
