@@ -14,13 +14,11 @@
     display: flex;
     align-items: center;
     gap: 24px;
-    opacity: 0.85;
 }
 
 .auth-partner-logos img {
-    height: 40px;
+    height: 45px;
     width: auto;
-    filter: brightness(0) invert(1);
 }
 
 .auth-footer-brand {

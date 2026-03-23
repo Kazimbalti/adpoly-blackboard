@@ -204,6 +204,17 @@ const App = {
                     AD Poly Library
                 </a>
             </div>
+            <div class="sidebar-section">
+                <div class="sidebar-label">Staff Attendance</div>
+                <a href="http://time-attendance.actvet.ac.ae/STSupreme/Welcome.aspx" target="_blank" class="sidebar-item">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    Time Attendance (VPN)
+                </a>
+                <a href="http://10.205.2.30/eAttendance/default/Login.aspx" target="_blank" class="sidebar-item">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><polyline points="17 11 19 13 23 9"></polyline></svg>
+                    eAttendance (VPN)
+                </a>
+            </div>
         `;
 
         // Quick course links

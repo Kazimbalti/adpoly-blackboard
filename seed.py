@@ -12,18 +12,12 @@ with app.app_context():
     print("  BB ADPOLY LMS - Database Seeder")
     print("=" * 60)
 
-    # Check if already seeded
+    # Check if already seeded - NEVER delete existing data
     existing = query_one("SELECT COUNT(*) as cnt FROM users")
     if existing['cnt'] > 0:
-        print("\n  Database already has data. Deleting and re-seeding...")
-        # Drop all data
-        for table in ['activity_log', 'notifications', 'grades', 'grade_items', 'grade_categories',
-                      'forum_posts', 'forum_threads', 'messages', 'conversation_participants', 'conversations',
-                      'proctor_events', 'exam_answers', 'exam_attempts', 'exam_questions', 'exams',
-                      'submissions', 'assignments', 'materials', 'material_folders', 'announcements',
-                      'enrollments', 'courses', 'sessions', 'password_resets', 'users']:
-            execute(f"DELETE FROM {table}")
-        print("  Cleared all existing data.\n")
+        print("\n  Database already has data. Keeping all existing courses, materials, and enrollments.")
+        print("  To re-seed from scratch, delete the database file first: rm database/bb_adpoly.db")
+        exit(0)
 
     # ===== LOAD ACTVET FACULTY FROM EXCEL =====
     faculty_contacts = []
