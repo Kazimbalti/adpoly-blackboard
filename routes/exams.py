@@ -3,7 +3,8 @@ from flask import Blueprint, request, jsonify, g
 from middleware.auth_middleware import login_required, faculty_required
 from services.exam_service import (
     get_exam_questions, get_exam_for_student, start_attempt,
-    submit_attempt, log_violation, check_time_remaining
+    submit_attempt, log_violation, check_time_remaining,
+    calculate_exam_grade, QUESTION_TYPES
 )
 from services.grade_service import sync_exam_grade
 from utils.db import query, query_one, execute
@@ -23,17 +24,27 @@ def list_exams(course_id):
                 "SELECT COUNT(*) as cnt FROM exam_attempts WHERE exam_id = ?",
                 (e['id'],)
             )['cnt']
+            # Count ungraded manual answers
+            e['needs_grading'] = query_one(
+                """SELECT COUNT(*) as cnt FROM exam_answers ea
+                   JOIN exam_attempts et ON et.id = ea.attempt_id
+                   WHERE et.exam_id = ? AND ea.score IS NULL AND ea.ai_draft_score IS NOT NULL""",
+                (e['id'],)
+            )['cnt']
     else:
         exams = query(
             "SELECT * FROM exams WHERE course_id = ? AND is_published = 1 ORDER BY start_window",
             (course_id,)
         )
         for e in exams:
-            attempt = query_one(
-                "SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ? ORDER BY started_at DESC LIMIT 1",
+            attempts = query(
+                """SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?
+                   ORDER BY attempt_number DESC""",
                 (e['id'], user['id'])
             )
-            e['attempt'] = attempt
+            e['attempts'] = attempts
+            e['attempt'] = attempts[0] if attempts else None
+            e['attempts_used'] = len(attempts)
 
     return jsonify({"exams": exams})
 
@@ -57,14 +68,15 @@ def create_exam(course_id):
     exam_id = execute(
         """INSERT INTO exams (course_id, title, description, exam_type, duration_minutes,
            total_points, start_window, end_window, shuffle_questions, shuffle_options,
-           show_results, max_attempts, proctor_enabled, require_webcam,
+           show_results, max_attempts, grade_recording, proctor_enabled, require_webcam,
            detect_tab_switch, detect_copy_paste, lockdown_browser, max_violations)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (course_id, data['title'], sanitize_html(data.get('description', '')),
          data.get('exam_type', 'quiz'), data['duration_minutes'], data['total_points'],
          data.get('start_window'), data.get('end_window'),
          data.get('shuffle_questions', 0), data.get('shuffle_options', 0),
          data.get('show_results', 'after_submit'), data.get('max_attempts', 1),
+         data.get('grade_recording', 'best'),
          data.get('proctor_enabled', 0), data.get('require_webcam', 0),
          data.get('detect_tab_switch', 1), data.get('detect_copy_paste', 1),
          data.get('lockdown_browser', 0), data.get('max_violations', 5))
@@ -102,20 +114,39 @@ def add_question(exam_id):
         return jsonify({"error": msg}), 400
 
     options = json.dumps(data['options']) if data.get('options') else None
+    matching_pairs = json.dumps(data['matching_pairs']) if data.get('matching_pairs') else None
+    ordering_items = json.dumps(data['ordering_items']) if data.get('ordering_items') else None
+    accepted_answers = json.dumps(data['accepted_answers']) if data.get('accepted_answers') else None
+    correct_answers = json.dumps(data['correct_answers']) if data.get('correct_answers') else None
+    hotspot_regions = json.dumps(data['hotspot_regions']) if data.get('hotspot_regions') else None
+    keywords = json.dumps(data['keywords']) if data.get('keywords') else None
 
     q_id = execute(
         """INSERT INTO exam_questions (exam_id, question_type, question_text, points,
-           sort_order, options, correct_answer, word_limit, rubric)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           sort_order, options, correct_answer, correct_answers, word_limit, word_limit_min,
+           rubric, matching_pairs, ordering_items, accepted_answers, case_sensitive,
+           numeric_answer, numeric_tolerance, image_path, hotspot_regions,
+           allowed_file_types, partial_credit, keywords)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (exam_id, data['question_type'], sanitize_html(data['question_text']),
          data['points'], data.get('sort_order', 0), options,
-         data.get('correct_answer'), data.get('word_limit'),
-         sanitize_html(data.get('rubric', '')))
+         data.get('correct_answer'), correct_answers,
+         data.get('word_limit'), data.get('word_limit_min', 0),
+         sanitize_html(data.get('rubric', '')),
+         matching_pairs, ordering_items, accepted_answers,
+         data.get('case_sensitive', 0),
+         data.get('numeric_answer'), data.get('numeric_tolerance', 0),
+         data.get('image_path'), hotspot_regions,
+         data.get('allowed_file_types'), data.get('partial_credit', 0),
+         keywords)
     )
 
     question = query_one("SELECT * FROM exam_questions WHERE id = ?", (q_id,))
-    if question['options']:
-        question['options'] = json.loads(question['options'])
+    if question.get('options'):
+        try:
+            question['options'] = json.loads(question['options'])
+        except (json.JSONDecodeError, TypeError):
+            pass
     return jsonify({"message": "Question added", "question": question}), 201
 
 
@@ -144,14 +175,31 @@ def bulk_add_questions(exam_id):
     added = []
     for i, q in enumerate(data['questions']):
         options = json.dumps(q['options']) if q.get('options') else None
+        matching_pairs = json.dumps(q.get('matching_pairs')) if q.get('matching_pairs') else None
+        ordering_items = json.dumps(q.get('ordering_items')) if q.get('ordering_items') else None
+        accepted_answers = json.dumps(q.get('accepted_answers')) if q.get('accepted_answers') else None
+        correct_answers = json.dumps(q.get('correct_answers')) if q.get('correct_answers') else None
+        hotspot_regions = json.dumps(q.get('hotspot_regions')) if q.get('hotspot_regions') else None
+        keywords = json.dumps(q.get('keywords')) if q.get('keywords') else None
+
         q_id = execute(
             """INSERT INTO exam_questions (exam_id, question_type, question_text, points,
-               sort_order, options, correct_answer, word_limit, rubric)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               sort_order, options, correct_answer, correct_answers, word_limit, word_limit_min,
+               rubric, matching_pairs, ordering_items, accepted_answers, case_sensitive,
+               numeric_answer, numeric_tolerance, image_path, hotspot_regions,
+               allowed_file_types, partial_credit, keywords)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (exam_id, q['question_type'], sanitize_html(q['question_text']),
              q['points'], q.get('sort_order', i), options,
-             q.get('correct_answer'), q.get('word_limit'),
-             sanitize_html(q.get('rubric', '')))
+             q.get('correct_answer'), correct_answers,
+             q.get('word_limit'), q.get('word_limit_min', 0),
+             sanitize_html(q.get('rubric', '')),
+             matching_pairs, ordering_items, accepted_answers,
+             q.get('case_sensitive', 0),
+             q.get('numeric_answer'), q.get('numeric_tolerance', 0),
+             q.get('image_path'), hotspot_regions,
+             q.get('allowed_file_types'), q.get('partial_credit', 0),
+             keywords)
         )
         added.append(q_id)
 
@@ -162,7 +210,10 @@ def bulk_add_questions(exam_id):
 @login_required
 def start_exam(exam_id):
     user = g.current_user
-    attempt, error = start_attempt(exam_id, user['id'], request.remote_addr)
+    attempt, error = start_attempt(
+        exam_id, user['id'], request.remote_addr,
+        request.headers.get('User-Agent', '')
+    )
     if error:
         return jsonify({"error": error}), 400
 
@@ -175,6 +226,8 @@ def start_exam(exam_id):
         "exam": {
             "title": exam['title'],
             "duration_minutes": exam['duration_minutes'],
+            "total_points": exam['total_points'],
+            "end_window": exam.get('end_window'),
             "proctor_enabled": bool(exam['proctor_enabled']),
             "require_webcam": bool(exam['require_webcam']),
             "detect_tab_switch": bool(exam['detect_tab_switch']),
@@ -198,11 +251,12 @@ def submit_exam(exam_id):
     if error:
         return jsonify({"error": error}), 400
 
-    # Sync grade
-    if attempt['total_score'] is not None:
-        sync_exam_grade(exam_id, g.current_user['id'], attempt['total_score'])
-
+    # Calculate and sync grade based on recording rule
     exam = query_one("SELECT * FROM exams WHERE id = ?", (exam_id,))
+    final_grade = calculate_exam_grade(exam_id, g.current_user['id'])
+    if final_grade is not None:
+        sync_exam_grade(exam_id, g.current_user['id'], final_grade)
+
     show_score = exam['show_results'] != 'never'
 
     return jsonify({
@@ -253,7 +307,8 @@ def get_exam_results(exam_id):
             (a['id'],)
         )
         a['answers'] = query(
-            """SELECT ea.*, eq.question_text, eq.question_type, eq.points as max_points, eq.correct_answer
+            """SELECT ea.*, eq.question_text, eq.question_type, eq.points as max_points,
+                      eq.correct_answer, eq.rubric
                FROM exam_answers ea
                JOIN exam_questions eq ON eq.id = ea.question_id
                WHERE ea.attempt_id = ?""",
@@ -261,6 +316,28 @@ def get_exam_results(exam_id):
         )
 
     return jsonify({"attempts": attempts})
+
+
+@exams_bp.route('/<int:exam_id>/attempts/<int:student_id>', methods=['GET'])
+@login_required
+def get_student_attempts(exam_id, student_id):
+    """Get all attempts for a student (for attempt history view)"""
+    user = g.current_user
+    if user['role'] == 'student' and user['id'] != student_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    attempts = query(
+        """SELECT * FROM exam_attempts WHERE exam_id = ? AND student_id = ?
+           ORDER BY attempt_number""",
+        (exam_id, student_id)
+    )
+    exam = query_one("SELECT * FROM exams WHERE id = ?", (exam_id,))
+
+    return jsonify({
+        "attempts": attempts,
+        "max_attempts": exam['max_attempts'] if exam else 1,
+        "grade_recording": exam.get('grade_recording', 'best') if exam else 'best'
+    })
 
 
 @exams_bp.route('/<int:exam_id>/publish', methods=['POST'])
@@ -281,8 +358,9 @@ def update_exam(exam_id):
     params = []
     for field in ['title', 'description', 'exam_type', 'duration_minutes', 'total_points',
                   'start_window', 'end_window', 'shuffle_questions', 'shuffle_options',
-                  'show_results', 'max_attempts', 'proctor_enabled', 'require_webcam',
-                  'detect_tab_switch', 'detect_copy_paste', 'lockdown_browser', 'max_violations']:
+                  'show_results', 'max_attempts', 'grade_recording', 'proctor_enabled',
+                  'require_webcam', 'detect_tab_switch', 'detect_copy_paste',
+                  'lockdown_browser', 'max_violations']:
         if field in data:
             updates.append(f"{field} = ?")
             params.append(data[field])
@@ -298,29 +376,84 @@ def update_exam(exam_id):
 
 @exams_bp.route('/answers/<int:answer_id>/grade', methods=['POST'])
 @faculty_required
-def grade_answer(answer_id):
+def grade_answer_route(answer_id):
     data = request.get_json()
     if not data or 'score' not in data:
         return jsonify({"error": "Score required"}), 400
 
     execute(
-        "UPDATE exam_answers SET score = ?, feedback = ?, is_correct = ? WHERE id = ?",
+        """UPDATE exam_answers SET score = ?, feedback = ?, is_correct = ?,
+           faculty_confirmed = 1 WHERE id = ?""",
         (data['score'], sanitize_html(data.get('feedback', '')),
          1 if data['score'] > 0 else 0, answer_id)
     )
 
-    # Recalculate total score
+    # Recalculate total score for the attempt
     answer = query_one("SELECT * FROM exam_answers WHERE id = ?", (answer_id,))
     attempt = query_one("SELECT * FROM exam_attempts WHERE id = ?", (answer['attempt_id'],))
     total = query_one(
-        "SELECT COALESCE(SUM(score), 0) as total FROM exam_answers WHERE attempt_id = ?",
+        "SELECT COALESCE(SUM(score), 0) as total FROM exam_answers WHERE attempt_id = ? AND score IS NOT NULL",
         (answer['attempt_id'],)
     )
+
+    # Check if all answers are graded
+    ungraded = query_one(
+        "SELECT COUNT(*) as cnt FROM exam_answers WHERE attempt_id = ? AND score IS NULL",
+        (answer['attempt_id'],)
+    )
+    new_status = 'graded' if ungraded['cnt'] == 0 else 'submitted'
+
     execute(
-        "UPDATE exam_attempts SET total_score = ?, status = 'graded' WHERE id = ?",
-        (total['total'], answer['attempt_id'])
+        "UPDATE exam_attempts SET total_score = ?, status = ? WHERE id = ?",
+        (total['total'], new_status, answer['attempt_id'])
     )
 
-    sync_exam_grade(attempt['exam_id'], attempt['student_id'], total['total'])
+    # Sync grade using recording rule
+    final_grade = calculate_exam_grade(attempt['exam_id'], attempt['student_id'])
+    if final_grade is not None:
+        sync_exam_grade(attempt['exam_id'], attempt['student_id'], final_grade)
 
     return jsonify({"message": "Answer graded"})
+
+
+@exams_bp.route('/questions/<int:question_id>', methods=['DELETE'])
+@faculty_required
+def delete_question(question_id):
+    question = query_one("SELECT * FROM exam_questions WHERE id = ?", (question_id,))
+    if not question:
+        return jsonify({"error": "Question not found"}), 404
+    execute("DELETE FROM exam_questions WHERE id = ?", (question_id,))
+    return jsonify({"message": "Question deleted"})
+
+
+@exams_bp.route('/questions/<int:question_id>', methods=['PUT'])
+@faculty_required
+def update_question(question_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid request"}), 400
+
+    updates = []
+    params = []
+    for field in ['question_type', 'question_text', 'points', 'sort_order',
+                  'correct_answer', 'word_limit', 'word_limit_min', 'rubric',
+                  'case_sensitive', 'numeric_answer', 'numeric_tolerance',
+                  'image_path', 'allowed_file_types', 'partial_credit']:
+        if field in data:
+            val = sanitize_html(data[field]) if field in ('question_text', 'rubric') else data[field]
+            updates.append(f"{field} = ?")
+            params.append(val)
+
+    # JSON fields
+    for field in ['options', 'matching_pairs', 'ordering_items', 'accepted_answers',
+                  'correct_answers', 'hotspot_regions', 'keywords']:
+        if field in data:
+            updates.append(f"{field} = ?")
+            params.append(json.dumps(data[field]) if data[field] else None)
+
+    if updates:
+        params.append(question_id)
+        execute(f"UPDATE exam_questions SET {', '.join(updates)} WHERE id = ?", params)
+
+    question = query_one("SELECT * FROM exam_questions WHERE id = ?", (question_id,))
+    return jsonify({"message": "Question updated", "question": question})

@@ -97,6 +97,8 @@ const CoursesModule = {
                     <div class="tab" onclick="CoursesModule.switchTab('assignments', ${courseId})">Assignments</div>
                     <div class="tab" onclick="CoursesModule.switchTab('exams', ${courseId})">Exams</div>
                     <div class="tab" onclick="CoursesModule.switchTab('attendance', ${courseId})">Attendance</div>
+                    <div class="tab" onclick="CoursesModule.switchTab('projects', ${courseId})">Projects</div>
+                    <div class="tab" onclick="CoursesModule.switchTab('labs', ${courseId})">Labs</div>
                     <div class="tab" onclick="CoursesModule.switchTab('students', ${courseId})">Students</div>
                     <div class="tab" onclick="CoursesModule.switchTab('grades', ${courseId})">Grades</div>
                     <div class="tab" onclick="CoursesModule.switchTab('caf', ${courseId})">CAF</div>
@@ -150,6 +152,12 @@ const CoursesModule = {
                 break;
             case 'students':
                 this.renderStudentsTab(courseId);
+                break;
+            case 'projects':
+                ProjectsModule.renderForCourse(courseId);
+                break;
+            case 'labs':
+                LabsModule.renderForCourse(courseId);
                 break;
             case 'caf':
                 CAFModule.renderForCourse(courseId);

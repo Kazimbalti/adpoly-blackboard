@@ -11,6 +11,8 @@ from routes.admin import admin_bp
 from routes.onedrive import onedrive_bp
 from routes.attendance import attendance_bp
 from routes.caf import caf_bp
+from routes.projects import projects_bp
+from routes.labs import labs_bp
 
 
 def register_blueprints(app):
@@ -27,3 +29,5 @@ def register_blueprints(app):
     app.register_blueprint(onedrive_bp, url_prefix='/api/onedrive')
     app.register_blueprint(attendance_bp, url_prefix='/api/attendance')
     app.register_blueprint(caf_bp, url_prefix='/api/caf')
+    app.register_blueprint(projects_bp, url_prefix='/api/projects')
+    app.register_blueprint(labs_bp, url_prefix='/api/labs')
