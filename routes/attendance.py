@@ -8,10 +8,28 @@ attendance_bp = Blueprint('attendance', __name__)
 @attendance_bp.route('/course/<int:course_id>/sessions', methods=['GET'])
 @login_required
 def list_sessions(course_id):
+    user = g.current_user
     sessions = query(
-        "SELECT * FROM attendance_sessions WHERE course_id = ? ORDER BY session_date DESC",
+        """SELECT s.*,
+                  (SELECT COUNT(*) FROM attendance_records ar WHERE ar.session_id = s.id AND ar.status = 'present') as present_count,
+                  (SELECT COUNT(*) FROM attendance_records ar WHERE ar.session_id = s.id AND ar.status = 'absent') as absent_count,
+                  (SELECT COUNT(*) FROM attendance_records ar WHERE ar.session_id = s.id AND ar.status = 'late') as late_count,
+                  (SELECT COUNT(*) FROM attendance_records ar WHERE ar.session_id = s.id AND ar.status = 'excused') as excused_count
+           FROM attendance_sessions s
+           WHERE s.course_id = ?
+           ORDER BY s.session_date DESC""",
         (course_id,)
     )
+
+    # Add student's own status if the user is a student
+    if user['role'] == 'student':
+        for session in sessions:
+            rec = query_one(
+                "SELECT status FROM attendance_records WHERE session_id = ? AND student_id = ?",
+                (session['id'], user['id'])
+            )
+            session['my_status'] = rec['status'] if rec else None
+
     return jsonify({"sessions": sessions})
 
 
@@ -55,15 +73,25 @@ def get_session(session_id):
         (session_id,)
     )
 
-    return jsonify({"session": session, "records": records})
+    # Get all enrolled students for this course so the attendance-taking view can show everyone
+    students = query(
+        """SELECT u.id, u.email, u.first_name, u.last_name
+           FROM users u
+           JOIN enrollments e ON e.student_id = u.id
+           WHERE e.course_id = ? AND e.status = 'active'
+           ORDER BY u.last_name, u.first_name""",
+        (session['course_id'],)
+    )
+
+    return jsonify({"session": session, "records": records, "students": students})
 
 
 @attendance_bp.route('/sessions/<int:session_id>/record', methods=['POST'])
 @faculty_required
 def mark_attendance(session_id):
     data = request.get_json()
-    if not data or not data.get('student_id') or not data.get('status'):
-        return jsonify({"error": "student_id and status are required"}), 400
+    if not data or not data.get('student_id'):
+        return jsonify({"error": "student_id is required"}), 400
 
     session = query_one("SELECT * FROM attendance_sessions WHERE id = ?", (session_id,))
     if not session:
@@ -74,18 +102,26 @@ def mark_attendance(session_id):
         (session_id, data['student_id'])
     )
 
+    status = data.get('status')
+    notes = data.get('notes')
+
     if existing:
+        # Allow updating just notes without changing status
+        update_status = status if status else existing['status']
+        update_notes = notes if notes is not None else existing['notes']
         execute(
             """UPDATE attendance_records
                SET status = ?, check_in_time = ?, notes = ?, updated_at = datetime('now')
                WHERE id = ?""",
-            (data['status'], data.get('check_in_time'), data.get('notes'), existing['id'])
+            (update_status, data.get('check_in_time'), update_notes, existing['id'])
         )
     else:
+        if not status:
+            status = 'absent'
         execute(
             """INSERT INTO attendance_records (session_id, student_id, status, check_in_time, notes)
                VALUES (?, ?, ?, ?, ?)""",
-            (session_id, data['student_id'], data['status'], data.get('check_in_time'), data.get('notes'))
+            (session_id, data['student_id'], status, data.get('check_in_time'), notes)
         )
 
     return jsonify({"message": "Attendance recorded"})

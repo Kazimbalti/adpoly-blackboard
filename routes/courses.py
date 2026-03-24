@@ -299,7 +299,13 @@ def create_announcement(course_id):
 @courses_bp.route('/<int:course_id>/bulk-enroll', methods=['POST'])
 @faculty_required
 def bulk_enroll(course_id):
-    """Bulk enroll students by email list. Creates accounts for new emails."""
+    """Bulk enroll students by email list. Creates accounts for new emails.
+    Supports formats:
+      - email@example.com
+      - Full Name <email@example.com>
+      - email@example.com, Full Name
+    """
+    import re
     course = query_one("SELECT * FROM courses WHERE id = ?", (course_id,))
     if not course:
         return jsonify({"error": "Course not found"}), 404
@@ -308,17 +314,54 @@ def bulk_enroll(course_id):
     if not data or not data.get('emails'):
         return jsonify({"error": "emails array required"}), 400
 
-    emails = data['emails']
-    if isinstance(emails, str):
-        emails = [e.strip() for e in emails.replace(',', '\n').split('\n') if e.strip()]
+    raw_entries = data['emails']
+    if isinstance(raw_entries, str):
+        raw_entries = [e.strip() for e in raw_entries.split('\n') if e.strip()]
 
     results = {"enrolled": [], "already_enrolled": [], "created_and_enrolled": [], "errors": []}
 
-    for email in emails:
-        email = email.strip().lower()
-        if not email or '@' not in email:
-            results['errors'].append({"email": email, "reason": "Invalid email"})
+    for entry in raw_entries:
+        entry = entry.strip()
+        if not entry:
             continue
+
+        email = None
+        provided_name = None
+
+        # Format: "Full Name <email@example.com>"
+        angle_match = re.match(r'^(.+?)\s*<([^>]+@[^>]+)>\s*$', entry)
+        if angle_match:
+            provided_name = angle_match.group(1).strip()
+            email = angle_match.group(2).strip().lower()
+        else:
+            # Format: "email@example.com, Full Name" or "email@example.com"
+            parts = entry.split(',', 1)
+            candidate = parts[0].strip()
+            if '@' in candidate:
+                email = candidate.lower()
+                if len(parts) > 1 and parts[1].strip():
+                    provided_name = parts[1].strip()
+            elif len(parts) > 1 and '@' in parts[1]:
+                # Format: "Full Name, email@example.com"
+                email = parts[1].strip().lower()
+                provided_name = candidate
+            else:
+                # Try as plain email
+                if '@' in entry:
+                    email = entry.strip().lower()
+
+        if not email or '@' not in email:
+            results['errors'].append({"email": entry, "reason": "Invalid email"})
+            continue
+
+        # Parse provided name into first/last
+        if provided_name:
+            name_parts = provided_name.split()
+            first_name = name_parts[0] if name_parts else 'Student'
+            last_name = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ''
+        else:
+            first_name = None
+            last_name = None
 
         # Find existing student
         student = query_one("SELECT * FROM users WHERE email = ?", (email,))
@@ -326,10 +369,11 @@ def bulk_enroll(course_id):
         if not student:
             # Auto-create student account
             from services.auth_service import hash_password
-            name_part = email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
-            parts = name_part.split()
-            first_name = parts[0] if parts else 'Student'
-            last_name = ' '.join(parts[1:]) if len(parts) > 1 else ''
+            if not first_name:
+                name_part = email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+                parts = name_part.split()
+                first_name = parts[0] if parts else 'Student'
+                last_name = ' '.join(parts[1:]) if len(parts) > 1 else ''
 
             try:
                 student_id = execute(
@@ -341,9 +385,21 @@ def bulk_enroll(course_id):
             except Exception as e:
                 results['errors'].append({"email": email, "reason": str(e)})
                 continue
-        elif student['role'] != 'student':
-            results['errors'].append({"email": email, "reason": "User is not a student"})
-            continue
+        else:
+            # Update name if provided and student currently has email-derived name
+            if provided_name and student['role'] == 'student':
+                current_name = (student['first_name'] + ' ' + student['last_name']).strip()
+                email_prefix = email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+                # Update if name looks auto-generated (matches email prefix pattern)
+                if current_name.lower() == email_prefix.lower() or not student['last_name']:
+                    execute(
+                        "UPDATE users SET first_name = ?, last_name = ?, updated_at = datetime('now') WHERE id = ?",
+                        (first_name, last_name, student['id'])
+                    )
+
+            if student['role'] != 'student':
+                results['errors'].append({"email": email, "reason": "User is not a student"})
+                continue
 
         # Check existing enrollment
         existing = query_one(
@@ -366,7 +422,7 @@ def bulk_enroll(course_id):
 
     total_success = len(results['enrolled']) + len(results['created_and_enrolled'])
     return jsonify({
-        "message": f"Processed {len(emails)} emails: {total_success} enrolled, {len(results['already_enrolled'])} already enrolled, {len(results['errors'])} errors",
+        "message": f"Processed {len(raw_entries)} entries: {total_success} enrolled, {len(results['already_enrolled'])} already enrolled, {len(results['errors'])} errors",
         "results": results
     })
 
@@ -448,6 +504,40 @@ def update_course_visibility(course_id):
                 (1 if data.get('visible', True) else 0, data['exam_id'], course_id))
 
     return jsonify({"message": "Visibility updated"})
+
+
+@courses_bp.route('/<int:course_id>/students/<int:student_id>', methods=['PUT'])
+@faculty_required
+def update_student_name(course_id, student_id):
+    """Allow faculty to update a student's name within their course."""
+    # Verify student is enrolled in this course
+    enrolled = query_one(
+        "SELECT * FROM enrollments WHERE course_id = ? AND student_id = ?",
+        (course_id, student_id)
+    )
+    if not enrolled:
+        return jsonify({"error": "Student not found in this course"}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid request"}), 400
+
+    first_name = data.get('first_name', '').strip()
+    last_name = data.get('last_name', '').strip()
+
+    if not first_name:
+        return jsonify({"error": "First name is required"}), 400
+
+    execute(
+        "UPDATE users SET first_name = ?, last_name = ?, updated_at = datetime('now') WHERE id = ?",
+        (first_name, last_name, student_id)
+    )
+
+    student = query_one(
+        "SELECT id, email, first_name, last_name FROM users WHERE id = ?",
+        (student_id,)
+    )
+    return jsonify({"message": "Student name updated", "student": student})
 
 
 @courses_bp.route('/available', methods=['GET'])

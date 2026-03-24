@@ -280,6 +280,7 @@ const CoursesModule = {
                                         <td>${typeof TeamsModule !== 'undefined' ? TeamsModule.renderTeamsButton(s.email, s.first_name, 'chat') : ''}</td>
                                         <td>
                                             <div class="flex gap-1">
+                                                <button class="btn btn-sm btn-ghost" onclick="CoursesModule.showEditName(${courseId}, ${s.id}, '${escapeHtml(s.first_name)}', '${escapeHtml(s.last_name)}')">Edit Name</button>
                                                 ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost text-danger" onclick="CoursesModule.removeStudent(${courseId}, ${s.id}, '${escapeHtml(s.first_name)}')">Remove</button>` : ''}
                                                 ${s.status === 'dropped' ? `<button class="btn btn-sm btn-ghost text-success" onclick="CoursesModule.reEnroll(${courseId}, ${s.id})">Re-enroll</button>` : ''}
                                             </div>
@@ -304,30 +305,34 @@ const CoursesModule = {
     showBulkEnrollForm(courseId) {
         showModal('Bulk Add Students', `
             <div style="margin-bottom:16px; padding:12px; background:var(--info-bg); border-radius:var(--radius-sm); font-size:0.85rem; color:var(--info);">
-                <strong>How it works:</strong> Paste student emails below (one per line).
+                <strong>How it works:</strong> Paste student info below (one per line).
                 If a student doesn't have an account yet, one will be <strong>automatically created</strong>
                 with password <code>Student@123</code>.
+                <br><br>
+                <strong>Supported formats:</strong><br>
+                <code>student@adpoly.ac.ae</code> (email only)<br>
+                <code>Mohammed Ali &lt;student@adpoly.ac.ae&gt;</code> (name + email)<br>
+                <code>student@adpoly.ac.ae, Mohammed Ali</code> (email + name)
             </div>
             <form>
                 <div class="form-group">
-                    <label>Student Emails (one per line)</label>
-                    <textarea id="bulk-emails" class="form-control" rows="12" placeholder="student1@adpoly.ac.ae
-student2@adpoly.ac.ae
-student3@adpoly.ac.ae
-mohammed.ali@adpoly.ac.ae
-sara.nasser@adpoly.ac.ae
+                    <label>Students (one per line)</label>
+                    <textarea id="bulk-emails" class="form-control" rows="12" placeholder="Mohammed Ali <h12345678@adpoly.ac.ae>
+Sara Ahmed <h23456789@adpoly.ac.ae>
+h34567890@adpoly.ac.ae, Khalid Hassan
+student@adpoly.ac.ae
 
-Paste all student emails here, one per line.
-You can also paste comma-separated emails."></textarea>
+You can include full names with emails.
+Names will be saved to student profiles."></textarea>
                     <div class="form-hint">
-                        <span id="email-count">0</span> emails detected.
+                        <span id="email-count">0</span> entries detected.
                         New students will be auto-created with password: <strong>Student@123</strong>
                     </div>
                 </div>
             </form>
             <script>
                 document.getElementById('bulk-emails').addEventListener('input', function() {
-                    const count = this.value.split(/[\\n,]/).map(e => e.trim()).filter(e => e && e.includes('@')).length;
+                    const count = this.value.split(/\\n/).map(e => e.trim()).filter(e => e && e.includes('@')).length;
                     document.getElementById('email-count').textContent = count;
                 });
             </script>
@@ -339,17 +344,17 @@ You can also paste comma-separated emails."></textarea>
 
     async bulkEnroll(courseId) {
         const raw = $('#bulk-emails').value;
-        const emails = raw.split(/[\n,]/).map(e => e.trim()).filter(e => e && e.includes('@'));
+        const entries = raw.split(/\n/).map(e => e.trim()).filter(e => e && e.includes('@'));
 
-        if (!emails.length) {
-            showToast('No valid emails found. Enter emails one per line.', 'warning');
+        if (!entries.length) {
+            showToast('No valid entries found. Enter one student per line.', 'warning');
             return;
         }
 
         const btn = $('#bulk-enroll-btn');
-        if (btn) { btn.disabled = true; btn.textContent = `Enrolling ${emails.length} students...`; }
+        if (btn) { btn.disabled = true; btn.textContent = `Enrolling ${entries.length} students...`; }
 
-        const data = await apiPost(`/courses/${courseId}/bulk-enroll`, { emails });
+        const data = await apiPost(`/courses/${courseId}/bulk-enroll`, { emails: entries });
 
         if (data.error) {
             showToast(data.error, 'error');
@@ -546,6 +551,41 @@ You can also paste comma-separated emails."></textarea>
         closeModal();
         showToast('Course updated!', 'success');
         this.renderDetail(courseId);
+    },
+
+    showEditName(courseId, studentId, firstName, lastName) {
+        showModal('Edit Student Name', `
+            <form>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>First Name</label>
+                        <input type="text" id="edit-fname" class="form-control" value="${escapeHtml(firstName)}" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Last Name</label>
+                        <input type="text" id="edit-lname" class="form-control" value="${escapeHtml(lastName)}">
+                    </div>
+                </div>
+            </form>
+        `, `
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="CoursesModule.updateStudentName(${courseId}, ${studentId})">Save Name</button>
+        `);
+    },
+
+    async updateStudentName(courseId, studentId) {
+        const firstName = $('#edit-fname').value.trim();
+        const lastName = $('#edit-lname').value.trim();
+        if (!firstName) { showToast('First name is required', 'warning'); return; }
+
+        const data = await apiPut(`/courses/${courseId}/students/${studentId}`, {
+            first_name: firstName,
+            last_name: lastName
+        });
+        if (data.error) { showToast(data.error, 'error'); return; }
+        closeModal();
+        showToast('Student name updated!', 'success');
+        this.renderStudentsTab(courseId);
     },
 
     async enroll(courseId) {
