@@ -91,7 +91,11 @@ def get_student_dashboard(user_id):
            FROM assignments a
            JOIN courses c ON c.id = a.course_id
            JOIN enrollments e ON e.course_id = c.id
-           LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = ?
+           LEFT JOIN (
+               SELECT assignment_id, student_id, id, submitted_at, grade
+               FROM submissions WHERE student_id = ?
+               GROUP BY assignment_id HAVING attempt_number = MAX(attempt_number)
+           ) s ON s.assignment_id = a.id
            WHERE e.student_id = ? AND e.status = 'active'
              AND a.is_visible = 1
              AND (a.due_date IS NULL OR a.due_date >= datetime('now'))
